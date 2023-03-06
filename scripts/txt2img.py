@@ -216,7 +216,7 @@ def main(opt):
 
     config = OmegaConf.load(f"{opt.config}")
     device = torch.device("cuda") if opt.device == "cuda" else torch.device("cpu")
-    model = load_model_from_config(config, f"{opt.ckpt}", device)
+    model = load_model_from_config(config, f"{opt.ckpt}", device,verbose=True)
 
     if opt.plms:
         sampler = PLMSSampler(model, device=device)
