@@ -277,22 +277,26 @@ class BasicTransformerBlock(nn.Module):
 
 class SpatialTransformer(nn.Module):
     """
+    Spatial temporal transformer
+    Can handle video/image input
     Transformer block for image-like data.
     First, project the input (aka embedding)
     and reshape to b, t, d.
     Then apply standard transformer action.
     Finally, reshape to image
     NEW: use_linear for more efficiency instead of the 1x1 convs
+    dims: 2 spatial attention, 3 spatial temporal attension
     """
     def __init__(self, in_channels, n_heads, d_head,
                  depth=1, dropout=0., context_dim=None,
                  disable_self_attn=False, use_linear=False,
-                 use_checkpoint=True):
+                 use_checkpoint=True,dims=2):
         super().__init__()
         if exists(context_dim) and not isinstance(context_dim, list):
             context_dim = [context_dim]
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
+
         self.norm = Normalize(in_channels)
         if not use_linear:
             self.proj_in = nn.Conv2d(in_channels,
@@ -315,27 +319,102 @@ class SpatialTransformer(nn.Module):
                                                   stride=1,
                                                   padding=0))
         else:
-            self.proj_out = zero_module(nn.Linear(in_channels, inner_dim))
+            # bugs fix
+            # self.proj_out = zero_module(nn.Linear(in_channels, inner_dim))
+            self.proj_out = zero_module(nn.Linear(inner_dim, in_channels))
         self.use_linear = use_linear
+
+        if dims==3:
+            self.norm_temporal=Normalize(in_channels)
+            if not use_linear:
+                self.proj_in_temporal = nn.Conv1d(in_channels,inner_dim,kernel_size=1,stride=1,padding=0)
+            else:
+                self.proj_in_temporal = nn.Linear(in_channels, inner_dim)
+            self.transformer_blocks_temporal=nn.ModuleList(
+                [BasicTransformerBlock(inner_dim, n_heads, d_head, dropout=dropout, context_dim=context_dim[d],
+                                   disable_self_attn=disable_self_attn, checkpoint=use_checkpoint)
+                for d in range(depth)])
+            if not use_linear:
+                self.proj_out_temporal=nn.Conv1d(inner_dim,in_channels,kernel_size=1,stride=1,padding=0)
+            else:
+                self.proj_out_temporal = zero_module(nn.Linear(inner_dim, in_channels))
 
     def forward(self, x, context=None):
         # note: if no context is given, cross-attention defaults to self-attention
         if not isinstance(context, list):
             context = [context]
-        b, c, h, w = x.shape
-        x_in = x
-        x = self.norm(x)
-        if not self.use_linear:
-            x = self.proj_in(x)
-        x = rearrange(x, 'b c h w -> b (h w) c').contiguous()
-        if self.use_linear:
-            x = self.proj_in(x)
-        for i, block in enumerate(self.transformer_blocks):
-            x = block(x, context=context[i])
-        if self.use_linear:
-            x = self.proj_out(x)
-        x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w).contiguous()
-        if not self.use_linear:
-            x = self.proj_out(x)
-        return x + x_in
+        is_video=(len(x.shape)==5)
+        if is_video:
+            b, c, t, h, w=x.shape
+            # spatial attention
+            x=rearrange(x,'b c t h w -> (b t) c h w').contiguous()
+            x_in=x
+            x=self.norm(x)
+            if not self.use_linear:
+                x=self.proj_in(x)
+            x=rearrange(x, 'bt c h w -> bt (h w) c').contiguous()
+            if self.use_linear:
+                x=self.proj_in(x)
+            for i, block in enumerate(self.transformer_blocks):
+                context_i=repeat(context[i],"b l c -> (b t) l c",t=t).contiguous()
+                x = block(x, context=context_i)
+            if self.use_linear:
+                x = self.proj_out(x)
+            x = rearrange(x, 'bt (h w) c -> bt c h w', h=h, w=w).contiguous()
+            if not self.use_linear:
+                x = self.proj_out(x)
+            x=x+x_in
+            #temporal attention
+            x=rearrange(x, '(b t) c h w -> (b h w) c t',t=t).contiguous()
+            x_in=x
+            x=self.norm_temporal(x)
+            if not self.use_linear:
+                x=self.proj_in_temporal(x)
+            x=rearrange(x,'bhw c t->bhw t c').contiguous()
+            if self.use_linear:
+                x=self.proj_in_temporal(x)
+            for i, block in enumerate(self.transformer_blocks_temporal):
+                context_i=repeat(context[i],'b l c -> (b h w) l c',h=h,w=w).contiguous()
+                x = block(x, context=context_i)
+            if self.use_linear:
+                x=self.proj_out_temporal(x)
+            x = rearrange(x, 'bhw t c -> bhw c t').contiguous()
+            if not self.use_linear:
+                x = self.proj_out_temporal(x)
+            x=x+x_in
+            x=rearrange(x,'(b h w) c t -> b c t h w', h=h,w=w).contiguous()
+        else:
+            b, c, h, w = x.shape
+            x_in = x
+            x = self.norm(x)
+            if not self.use_linear:
+                x = self.proj_in(x)
+            x = rearrange(x, 'b c h w -> b (h w) c').contiguous()
+            if self.use_linear:
+                x = self.proj_in(x)
+            for i, block in enumerate(self.transformer_blocks):
+                x = block(x, context=context[i])
+            if self.use_linear:
+                x = self.proj_out(x)
+            x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w).contiguous()
+            if not self.use_linear:
+                x = self.proj_out(x)
+            x = x+x_in
+        return x
 
+if __name__=='__main__':
+    input=torch.randn(2,64,8,64,64)
+    context=[torch.randn(2,77,1024)]
+    ch=64
+    num_heads=8
+    dim_head=8
+    transformer_depth=1
+    context_dim=1024
+    disabled_sa=False
+    use_linear_in_transformer=True
+    use_checkpoint=True
+    model=SpatialTransformer(ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,
+                                disable_self_attn=disabled_sa, use_linear=use_linear_in_transformer,
+                                use_checkpoint=use_checkpoint,dims=3)
+    output=model(input,context)
+    print(output.shape)
