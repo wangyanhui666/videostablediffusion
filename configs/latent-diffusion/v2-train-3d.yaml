@@ -16,11 +16,12 @@ model:
     monitor: val/loss_simple_ema
     scale_factor: 0.18215
     ckpt_path: /home/v-yanhwang/code/ckpt/stable-diffsion-v2-1/v2-1_512-ema-pruned.ckpt
-    use_ema: Ture # we set this to Ture because this is an train config
+    use_ema: True # we set this to Ture because this is an train config
 
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
+        dims: 3 #video training
         use_checkpoint: True
         use_fp16: True
         image_size: 32 # unused

@@ -566,7 +566,6 @@ if __name__ == "__main__":
 
         # modelcheckpoint - use TrainResult/EvalResult(checkpoint_on=metric) to
         # specify which metric is used to determine best models
-        # need to add to config file
         default_modelckpt_cfg = {
             "target": "pytorch_lightning.callbacks.ModelCheckpoint",
             "params": {
@@ -574,7 +573,7 @@ if __name__ == "__main__":
                 "filename": "{epoch:06}",
                 "verbose": True,
                 "save_last": False,
-                "every_n_epochs": 10
+                "every_n_epochs": 100
             }
         }
         if hasattr(model, "monitor"):
@@ -674,6 +673,7 @@ if __name__ == "__main__":
 
         # configure learning rate
         bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
+        # bs, base_lr = 2, 0.0001
         if not cpu:
             # ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
             ngpu=len(lightning_config.trainer.gpus)
