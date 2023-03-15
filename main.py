@@ -574,7 +574,7 @@ if __name__ == "__main__":
                 "filename": "{epoch:06}",
                 "verbose": True,
                 "save_last": False,
-                "every_n_epochs": 10
+                "every_n_epochs": 100
             }
         }
         if hasattr(model, "monitor"):

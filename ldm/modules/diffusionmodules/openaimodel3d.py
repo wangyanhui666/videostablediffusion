@@ -86,16 +86,21 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
                 x = layer(x)
         return x
 
-def spatial_temporal_forward(x,spatial_layers,temporal_layers):
+def spatial_temporal_forward(x,spatial_layers,temporal_layers,identity_layer=nn.Identity(),emb=None,context=None):
     """
     fisrt do spacial forward
     then do temporal forward
+    have skip connection
+    in the temporal layers not change channel
     """
     b,c,*_,h,w=x.shape
-    x=rearrange(x,'b c t h w -> (b t) c h w')
+    x=rearrange(x,'b c t h w -> (b t) c h w').contiguous()
     if isinstance(spatial_layers, nn.Module):
         # If the spatial_layers is a single convolutional layer or an nn.Sequential object
-        x = spatial_layers(x)
+        if isinstance(spatial_layers, TimestepEmbedSequential):
+            x = spatial_layers(x,emb,context)
+        else:
+            x = spatial_layers(x)
     elif isinstance(spatial_layers, list):
         # If the spatial_layers is a list of convolutional layers
         for layer in spatial_layers:
@@ -104,24 +109,29 @@ def spatial_temporal_forward(x,spatial_layers,temporal_layers):
         raise TypeError("spatial_layers argument must be a single convolutional layer, an nn.Sequential object, or a list of convolutional layers")
     
     bt,c,h,w=x.shape
-    x=rearrange(x,'(b t) c  h w -> (b h w) c t',b=b)
-    
+    x=rearrange(x,'(b t) c h w -> (b h w) c t',b=b).contiguous()
+    identity=identity_layer(x)
     if isinstance(temporal_layers, nn.Module):
         # If the temporal_layers is a single convolutional layer or an nn.Sequential object
-        x = temporal_layers(x)
+        if isinstance(temporal_layers, TimestepEmbedSequential):
+            x = temporal_layers(x,emb,context)
+        else:
+            x = temporal_layers(x)
     elif isinstance(temporal_layers, list):
         # If the temporal_layers is a list of convolutional layers
         for layer in temporal_layers:
             x = layer(x)
     else:
         raise TypeError("temporal_layers argument must be a single convolutional layer, an nn.Sequential object, or a list of convolutional layers")
-    x=rearrange(x, '(b h w) c t -> b c t h w', h=h, w=w)
+    x=x+identity
+    x=rearrange(x, '(b h w) c t -> b c t h w', h=h, w=w).contiguous()
     return x
 
 
 class Upsample(nn.Module):
     """
     can handle image/video as input
+    temporal conv is zero initialized
     An upsampling layer with an optional convolution.
     :param channels: channels in the inputs and outputs.
     :param use_conv: a bool determining if a convolution is applied.
@@ -143,7 +153,7 @@ class Upsample(nn.Module):
                 self.conv = conv_nd(dims, self.channels, self.out_channels, 3, padding=padding)
             else:
                 self.conv = conv_nd(2,self.channels,self.out_channels,3,padding=padding)
-                self.conv1d = conv_nd(1,self.out_channels,self.out_channels,3,padding=padding)
+                self.conv_temporal = zero_module(conv_nd(1,self.out_channels,self.out_channels,3,padding=padding))
     def forward(self, x):
         assert x.shape[1] == self.channels
         is_video=(len(x.shape)==5)
@@ -155,7 +165,7 @@ class Upsample(nn.Module):
             x = F.interpolate(x, scale_factor=2, mode="nearest")
         if self.use_conv:
             if is_video:
-                x=spatial_temporal_forward(x,self.conv,self.conv1d)
+                x=spatial_temporal_forward(x,self.conv,self.conv_temporal)
             else:
                 x = self.conv(x)
         return x
@@ -198,22 +208,33 @@ class Downsample(nn.Module):
                 self.op = conv_nd(dims, self.channels, self.out_channels, 3, stride=stride, padding=padding)
             else:
                 self.op = conv_nd(2, self.channels, self.out_channels, 3, stride=stride, padding=padding)
-                self.conv1d=conv_nd(1, self.out_channels, self.out_channels, 3, stride=self.timedownscale, padding=padding)
+                self.conv_temporal=zero_module(conv_nd(1, self.out_channels, self.out_channels, 3, stride=self.timedownscale, padding=padding))
+                if self.timedownscale==1:
+                    self.identity=nn.Identity()
+                elif self.timedownscale==2:
+                    self.identity=avg_pool_nd(1,kernel_size=stride,stride=stride)
         else:
-            stride=2 if dims!=3 else (self.timedownscale, 2, 2)
             assert self.channels == self.out_channels
-            self.op = avg_pool_nd(dims, kernel_size=stride, stride=stride)
-
+            if dims!=3:
+                stride=2
+                self.op = avg_pool_nd(dims, kernel_size=stride, stride=stride)
+            else: 
+                self.op = avg_pool_nd(2, kernel_size=2, stride=2)
+                stride=(self.timedownscale,2,2)
+                self.op_3d=avg_pool_nd(3,kernel_size=stride,stride=stride)
     def forward(self, x):
         assert x.shape[1] == self.channels
         is_video=(len(x.shape)==5)
         if self.use_conv:
             if is_video:
-                x=spatial_temporal_forward(x,self.op,self.conv1d)
+                x=spatial_temporal_forward(x,self.op,self.conv_temporal,self.identity)
             else:
                 x = self.op(x)
         else:
-            x=self.op(x)
+            if is_video:
+                x=self.op_3d(x)
+            else:
+                x=self.op(x)
         return x
 
 
@@ -232,7 +253,6 @@ class ResBlock(TimestepBlock):
     :param use_checkpoint: if True, use gradient checkpointing on this module.
     :param up: if True, use this block for upsampling.
     :param down: if True, use this block for downsampling.
-    timescale: up/down scale of time dim
     """
 
     def __init__(
@@ -247,7 +267,6 @@ class ResBlock(TimestepBlock):
         use_checkpoint=False,
         up=False,
         down=False,
-        timescale=1
     ):
         super().__init__()
         self.channels = channels
@@ -257,7 +276,7 @@ class ResBlock(TimestepBlock):
         self.use_conv = use_conv
         self.use_checkpoint = use_checkpoint
         self.use_scale_shift_norm = use_scale_shift_norm
-        self.timescale=timescale
+        
         if dims!=3:
             self.in_layers = nn.Sequential(
                 normalization(channels),
@@ -273,7 +292,7 @@ class ResBlock(TimestepBlock):
             self.in_layers_temporal=nn.Sequential(
                 normalization(self.out_channels),
                 nn.SiLU(),
-                conv_nd(1, self.out_channels, self.out_channels, 3, padding=1),
+                zero_module(conv_nd(1, self.out_channels, self.out_channels, 3, padding=1)),
             )
 
         self.updown = up or down
@@ -333,13 +352,13 @@ class ResBlock(TimestepBlock):
                 )
             else:
                 self.skip_connection = conv_nd(2, channels, self.out_channels, 3, padding=1)
-                self.skip_connection_temporal=conv_nd(1,self.out_channels,self.out_channels,3,padding=1)
+                self.skip_connection_temporal=zero_module(conv_nd(1,self.out_channels,self.out_channels,3,padding=1))
         else:
             if dims!=3:
                 self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
             else:
                 self.skip_connection = conv_nd(2, channels, self.out_channels, 1)
-                self.skip_connection_temporal = conv_nd(1, self.out_channels, self.out_channels, 1)
+                self.skip_connection_temporal = zero_module(conv_nd(1, self.out_channels, self.out_channels, 1))
 
     def forward(self, x, emb):
         """
@@ -381,6 +400,7 @@ class ResBlock(TimestepBlock):
         emb_out = self.emb_layers(emb).type(x.dtype)
         while len(emb_out.shape) < len(x.shape):
             emb_out = emb_out[..., None]
+
         if self.use_scale_shift_norm:
             if is_video:
                 out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
@@ -736,7 +756,7 @@ class UNetModel(nn.Module):
                 ]
             )
             self.input_blocks_temporal=TimestepEmbedSequential(
-                    conv_nd(1, model_channels, model_channels, 3, padding=1)
+                    zero_module(conv_nd(1, model_channels, model_channels, 3, padding=1))
                 )
         self._feature_size = model_channels
         input_block_chans = [model_channels]
@@ -949,7 +969,7 @@ class UNetModel(nn.Module):
                 )
                 self.id_predictor_temporal=nn.Sequential(
                 # normalization(model_channels),
-                conv_nd(1, n_embed, n_embed, 1),
+                zero_module(conv_nd(1, n_embed, n_embed, 1)),
                 #nn.LogSoftmax(dim=1)  # change to cross_entropy and produce non-normalized logits
                 )
 
@@ -993,12 +1013,7 @@ class UNetModel(nn.Module):
         h = x.type(self.dtype)
         for layer,module in enumerate(self.input_blocks):
             if layer==0 and is_video:
-                b,c,t,height,width=h.shape
-                h=rearrange(h,'b c t h w -> (b t) c h w').contiguous()
-                h=module(h,emb,context)
-                h=rearrange(h, '(b t) c h w -> (b h w) c t',t=t).contiguous()
-                h=self.input_blocks_temporal(h,emb,context)
-                h=rearrange(h,'(b h w) c t -> b c t h w',h=height,w=width).contiguous()
+                h=spatial_temporal_forward(h,module,self.input_blocks_temporal,emb=emb,context=context)
                 hs.append(h)
             else:
                 h = module(h, emb, context)
@@ -1010,29 +1025,19 @@ class UNetModel(nn.Module):
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
             if is_video:
-                b,c,t,height,width=h.shape
-                h=rearrange(h,'b c t h w -> (b t) c h w').contiguous()
-                h=self.id_predictor(h)
-                h=rearrange(h, '(b t) c h w -> (b h w) c t',t=t).contiguous()
-                h=self.id_predictor_temporal(h)
-                h=rearrange(h,'(b h w) c t -> b c t h w',h=height,w=width).contiguous()
+                h=spatial_temporal_forward(h,self.id_predictor,self.id_predictor_temporal)
                 return h
             else:
                 return self.id_predictor(h)
         else:
             if is_video:
-                b,c,t,height,width=h.shape
-                h=rearrange(h,'b c t h w -> (b t) c h w').contiguous()
-                h=self.out(h)
-                h=rearrange(h, '(b t) c h w -> (b h w) c t',t=t).contiguous()
-                h=self.out_temporal(h)
-                h=rearrange(h,'(b h w) c t -> b c t h w',h=height,w=width).contiguous()
+                h=spatial_temporal_forward(h,self.out,self.out_temporal)
                 return h
             else:
                 return self.out(h)
 
 if __name__=="__main__":
-    input=th.randn(2,4,8,64,64).cuda()
+    input=th.randn(2,4,64,64).cuda()
     input_emd=th.randn(2).cuda()
     use_checkpoint=True
     use_fp16=True
@@ -1065,8 +1070,25 @@ if __name__=="__main__":
     transformer_depth=1,
     context_dim=1024,
     legacy=False,
-    dims=3)
+    dims=3,
+    timescale=2)
     model.cuda()
     context=th.randn(2,77,1024).cuda()
     output=model(input,timesteps=input_emd,context=context)
     print(output.shape)
+# if __name__=='__main__':
+#     input=th.randn(2,320,8,64,64)
+#     t_emb=th.randn(2,1024)
+#     net=ResBlock(
+#         channels=320,
+#         emb_channels=1024,
+#         dropout=0.5,
+#         out_channels=320,
+#         use_conv=True,
+#         use_scale_shift_norm=True,
+#         dims=3,
+#         use_checkpoint=False,
+#         up=False,
+#         down=False,)
+#     output=net(input,t_emb)
+#     print(output.shape)

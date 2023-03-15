@@ -335,7 +335,7 @@ class SpatialTransformer(nn.Module):
                                    disable_self_attn=disable_self_attn, checkpoint=use_checkpoint)
                 for d in range(depth)])
             if not use_linear:
-                self.proj_out_temporal=nn.Conv1d(inner_dim,in_channels,kernel_size=1,stride=1,padding=0)
+                self.proj_out_temporal= zero_module(nn.Conv1d(inner_dim,in_channels,kernel_size=1,stride=1,padding=0))
             else:
                 self.proj_out_temporal = zero_module(nn.Linear(inner_dim, in_channels))
 
