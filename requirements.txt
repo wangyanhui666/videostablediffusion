@@ -1,5 +1,7 @@
 albumentations==0.4.3
 opencv-python
+av==10.0.0
+decord==0.6.0
 pudb==2019.2
 imageio==2.9.0
 imageio-ffmpeg==0.4.2
@@ -16,4 +18,5 @@ gradio==3.11
 kornia==0.6
 invisible-watermark>=0.1.5
 streamlit-drawable-canvas==0.8.0
+finetuning-scheduler==2.0.0
 -e .

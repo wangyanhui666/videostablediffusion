@@ -124,7 +124,7 @@ def spatial_temporal_forward(x,spatial_layers,temporal_layers,identity_layer=nn.
     elif temporal_layers==None:
         x=th.zeros_like(identity,device=identity.device,dtype=identity.dtype)
     else:
-        raise TypeError("temporal_layers argument must be a single convolutional layer, an nn.Sequential object, or a list of convolutional layers")
+        raise TypeError("temporal_layers argument must be a single convolutional layer, an nn.Sequential object, a list of convolutional layers or None")
     x=x+identity
     x=rearrange(x, '(b h w) c t -> b c t h w', h=h, w=w).contiguous()
     return x

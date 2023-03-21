@@ -16,7 +16,7 @@ model:
     monitor: val/loss_simple_ema
     scale_factor: 0.18215
     ckpt_path: /home/v-yanhwang/code/ckpt/stable-diffsion-v2-1/v2-1_512-ema-pruned.ckpt
-    use_ema: True # we set this to Ture because this is an train config
+    use_ema: False # need to fix # we set this to Ture because this is an train config
 
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
@@ -73,20 +73,52 @@ data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 1
-    num_workers: 1
+    num_workers: 24
     wrap: False
     train:
-      target: ldm.data.pseudodata.PseudoDataTrain
+      target: ldm.data.webvid_dataset.WebVid
       params:
-        size: 512
-
+        dataset_name: "WebVid"
+        data_dir: "/home/v-yanhwang/openseg/video"
+        split: "train"
+        cut: "10M"
+        subsample: 1
+        text_params: {"input": "text"}
+        video_params: {
+            # need to merge into transformers configs
+            "input_res": 320,
+            "num_frames": 8,  # TBD, if not fix, remove
+            "loading": "lax"
+        }
+        metadata_folder_name: "webvid10m_meta"
+        first_stage_key: "jpg"
+        cond_stage_key: "txt"
+        skip_missing_files: False
     validation:
-      target: ldm.data.pseudodata.PseudoDataVal
+      target: ldm.data.webvid_dataset.WebVid
       params:
-        size: 512
+        dataset_name: "WebVid"
+        data_dir: "/home/v-yanhwang/openseg/video"
+        split: "val"
+        cut: "10M"
+        subsample: 1
+        text_params: {"input": "text"}
+        video_params: {
+            "input_res": 320,
+            "num_frames": 8,  # TBD, if not fix, remove
+            "loading": "lax"
+        }
+        metadata_folder_name: "webvid10m_meta"
+        first_stage_key: "jpg"
+        cond_stage_key: "txt"
+        skip_missing_files: False
 
 lightning:
   callbacks:
+    FinetuningScheduler:
+      target: main.FinetuningScheduler
+       params:
+        gen_ft_sched_only: True
     image_logger:
       target: test_train.ImageLogger
       params:

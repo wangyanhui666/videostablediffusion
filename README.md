@@ -47,6 +47,7 @@ Stable Diffusion is a latent text-to-image diffusion model.
 ________________________________
   
 ## Requirements
+test on pytorch 1.13.1, cuda 11.7
 
 You can update an existing [latent diffusion](https://github.com/CompVis/latent-diffusion) environment by running
 
@@ -60,6 +61,7 @@ For more efficiency and speed on GPUs,
 we highly recommended installing the [xformers](https://github.com/facebookresearch/xformers)
 library.
 
+Tested on single A100 with CUDA 11.7
 Tested on A100 with CUDA 11.4.
 Installation needs a somewhat recent version of nvcc and gcc/g++, obtain those, e.g., via 
 ```commandline

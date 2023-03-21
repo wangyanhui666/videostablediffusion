@@ -17,8 +17,11 @@ from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateM
 from pytorch_lightning.utilities.distributed import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
 
+from finetuning_scheduler import FinetuningScheduler
+
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
+
 
 
 def get_parser(**parser_kwargs):
@@ -533,6 +536,12 @@ if __name__ == "__main__":
 
         # model
         model = instantiate_from_config(config.model)
+
+        # #frozen spatial part
+        # for name, param in model.named_parameters():
+        #     if 'temporal' not in name:
+        #         print(name)
+        #         param.requires_grad = False
 
         # trainer and callbacks
         trainer_kwargs = dict()

@@ -2,6 +2,7 @@ import torch
 import pytorch_lightning as pl
 import torch.nn.functional as F
 from contextlib import contextmanager
+from einops import rearrange
 
 from ldm.modules.diffusionmodules.model import Encoder, Decoder
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
@@ -80,14 +81,26 @@ class AutoencoderKL(pl.LightningModule):
             self.model_ema(self)
 
     def encode(self, x):
+        is_video=(len(x.shape)==5)
+        batch_size=x.shape[0]
+        if is_video:
+            x=rearrange(x, 'b c t h w -> (b t) c h w')
         h = self.encoder(x)
         moments = self.quant_conv(h)
+        if is_video:
+            moments = rearrange(moments,'(b t) c h w -> b c t h w',b=batch_size)
         posterior = DiagonalGaussianDistribution(moments)
         return posterior
 
     def decode(self, z):
+        is_video=(len(z.shape)==5)
+        batch_size=z.shape[0]
+        if is_video:
+            z=rearrange(z, 'b c t h w -> (b t) c h w')
         z = self.post_quant_conv(z)
         dec = self.decoder(z)
+        if is_video:
+            dec = rearrange(dec,'(b t) c h w -> b c t h w',b=batch_size)
         return dec
 
     def forward(self, input, sample_posterior=True):
@@ -103,7 +116,11 @@ class AutoencoderKL(pl.LightningModule):
         x = batch[k]
         if len(x.shape) == 3:
             x = x[..., None]
-        x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format).float()
+        if len(x.shape)==4:
+            x = rearrange(x, 'b h w c -> b c h w')
+        if len(x.shape)==5:
+            x = rearrange(x, 'b t c h w-> b c t h w')
+        x = x.to(memory_format=torch.contiguous_format).float()
         return x
 
     def training_step(self, batch, batch_idx, optimizer_idx):
